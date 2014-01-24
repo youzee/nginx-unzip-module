@@ -193,8 +193,8 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     memset(unzipextract_path, 0, PATH_MAX);
 
     /* get path variables terminated with 0 */
-    strncpy(unzipfile_path, (char *)unzip_filename.data, unzip_filename.len);
-    strncpy(unzipextract_path, (char *)unzip_extract.data, unzip_extract.len);
+    strncpy(unzipfile_path, (char *)unzip_filename.data, PATH_MAX - 1);
+    strncpy(unzipextract_path, (char *)unzip_extract.data, PATH_MAX - 1);
 
     /* try to open archive (zip) file */
     if (!(zip_source = zip_open(unzipfile_path, 0, &err))) {
@@ -289,3 +289,4 @@ static char *ngx_http_unzip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     return NGX_CONF_OK;
 } /* ngx_http_unzip */
+
