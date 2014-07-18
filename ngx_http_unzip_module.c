@@ -240,8 +240,10 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     zip_close(zip_source);
 
     /* set the content-type header. */
-    r->headers_out.content_type.len = sizeof("text/plain") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/plain";
+    if (ngx_http_set_content_type(r) != NGX_OK) {
+        r->headers_out.content_type.len = sizeof("text/plain") - 1;
+        r->headers_out.content_type.data = (u_char *) "text/plain";
+    }
 
     /* allocate a new buffer for sending out the reply. */
     b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
