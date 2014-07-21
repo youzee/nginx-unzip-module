@@ -170,34 +170,52 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     struct      zip_stat zip_st;
     struct      zip_file *file_in_zip;
     int         err = 0;
-    char        *unzipfile_path = malloc(PATH_MAX);
-    char        *unzipextract_path = malloc(PATH_MAX);
+    char        *unzipfile_path;
+    char        *unzipextract_path;
     unsigned char *zip_content;
-    int         zip_read_bytes;
+    unsigned int  zip_read_bytes;
 
     ngx_http_unzip_loc_conf_t *unzip_config;
     unzip_config = ngx_http_get_module_loc_conf(r, ngx_http_unzip_module);
 
     /* let's try to get file_in_unzip_archivefile and file_in_unzip_extract from nginx configuration */
-    if (ngx_http_complex_value(r, unzip_config->file_in_unzip_archivefile, &unzip_filename) != NGX_OK || ngx_http_complex_value(r, unzip_config->file_in_unzip_extract, &unzip_extract) != NGX_OK) {
+    if (ngx_http_complex_value(r, unzip_config->file_in_unzip_archivefile, &unzip_filename) != NGX_OK 
+            || ngx_http_complex_value(r, unzip_config->file_in_unzip_extract, &unzip_extract) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to read unzip module configuration settings.");
         return NGX_ERROR;
     }
 
     /* we're supporting just GET and HEAD requests */
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Only GET and HEAD requests are supported by the unzip module.");
         return NGX_HTTP_NOT_ALLOWED;
     }
 
     /* fill path variables with 0 as ngx_string_t doesn't terminate string with 0 */
-    memset(unzipfile_path, 0, PATH_MAX);
-    memset(unzipextract_path, 0, PATH_MAX);
+    unzipfile_path = malloc(unzip_filename.len+1);
+    if (unzipfile_path == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate buffer.");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    unzipextract_path = malloc(unzip_extract.len+1);
+    if (unzipextract_path == NULL) {
+        free(unzipfile_path);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate buffer.");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    memset(unzipfile_path, 0, unzip_filename.len+1);
+    memset(unzipextract_path, 0, unzip_extract.len+1);
 
     /* get path variables terminated with 0 */
-    strncpy(unzipfile_path, (char *)unzip_filename.data, PATH_MAX - 1);
-    strncpy(unzipextract_path, (char *)unzip_extract.data, PATH_MAX - 1);
+    strncpy(unzipfile_path, (char *)unzip_filename.data, unzip_filename.len);
+    strncpy(unzipextract_path, (char *)unzip_extract.data, unzip_extract.len);
 
     /* try to open archive (zip) file */
     if (!(zip_source = zip_open(unzipfile_path, 0, &err))) {
+        free(unzipfile_path);
+        free(unzipextract_path);
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "%s : no such archive file.", unzipfile_path);
         return NGX_HTTP_NOT_FOUND;
     }
@@ -207,14 +225,20 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
 
     /* let's check what's the size of a file. return 404 if we can't stat file inside archive */
     if (0 != zip_stat(zip_source, unzipextract_path, 0, &zip_st)) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no file %s inside %s archive.", unzipfile_path, unzipfile_path);
+        free(unzipfile_path);
+        free(unzipextract_path);
+        zip_close(zip_source);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no file %s inside %s archive.", unzipextract_path, unzipfile_path);
         return NGX_HTTP_NOT_FOUND;
     }
 
     /* allocate buffer for the file content */
     if (!(zip_content = ngx_palloc(r->pool, zip_st.size))) {
-      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate response buffer memory.");
-      return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        free(unzipfile_path);
+        free(unzipextract_path);
+        zip_close(zip_source);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate response buffer memory.");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     /* 
@@ -222,7 +246,11 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     *  so let's return 500.
     */
     if (!(file_in_zip = zip_fopen(zip_source, unzipextract_path, 0))) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to open %s from %s archive (corrupted?).", unzipfile_path, unzipfile_path);
+        free(unzipfile_path);
+        free(unzipextract_path);
+        zip_close(zip_source);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to open %s from %s archive (corrupted?).",
+                unzipextract_path, unzipfile_path);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -231,7 +259,12 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     *  we're expecting to get zip_st.size bytes so return 500 if we get something else.
     */
     if (!(zip_read_bytes = zip_fread(file_in_zip, zip_content, zip_st.size)) || zip_read_bytes != zip_st.size) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "couldn't get %d bytes of %s from %s archive (corrupted?).", zip_st.size, unzipfile_path, unzipfile_path);
+        free(unzipfile_path);
+        free(unzipextract_path);
+        zip_fclose(file_in_zip);
+        zip_close(zip_source);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "couldn't get %d bytes of %s from %s archive (corrupted?).",
+                zip_st.size, unzipextract_path, unzipfile_path);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -239,12 +272,23 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     zip_fclose(file_in_zip);
     zip_close(zip_source);
 
+    /* let's clean */
+    free(unzipfile_path);
+    free(unzipextract_path);
+
     /* set the content-type header. */
-    r->headers_out.content_type.len = sizeof("text/plain") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/plain";
+    if (ngx_http_set_content_type(r) != NGX_OK) {
+        r->headers_out.content_type.len = sizeof("text/plain") - 1;
+        r->headers_out.content_type.data = (u_char *) "text/plain";
+    }
 
     /* allocate a new buffer for sending out the reply. */
     b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+
+    if (b == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate response buffer.");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     /* insertion in the buffer chain. */
     out.buf = b;
@@ -259,10 +303,6 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = zip_read_bytes;
     ngx_http_send_header(r);
-
-    /* let's clean */
-    free(unzipfile_path);
-    free(unzipextract_path);
 
     return ngx_http_output_filter(r, &out);
 } /* ngx_http_unzip_handler */
