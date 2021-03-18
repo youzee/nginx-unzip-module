@@ -278,8 +278,16 @@ static ngx_int_t ngx_http_unzip_handler(ngx_http_request_t *r)
 
     /* set the content-type header. */
     if (ngx_http_set_content_type(r) != NGX_OK) {
-        r->headers_out.content_type.len = sizeof("text/plain") - 1;
-        r->headers_out.content_type.data = (u_char *) "text/plain";
+        if(zip_st.size > 3 && strncmp((const char*)zip_content, "\xFF\xD8\xFF", 3) == 0) {
+            r->headers_out.content_type.len = sizeof("image/jpeg") - 1;
+            r->headers_out.content_type.data = (u_char *) "image/jpeg";
+        } else if(zip_st.size > 8 && strncmp((const char*)zip_content, "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A", 8) == 0) {
+            r->headers_out.content_type.len = sizeof("image/png") - 1;
+            r->headers_out.content_type.data = (u_char *) "image/png";
+        } else {
+            r->headers_out.content_type.len = sizeof("text/plain") - 1;
+            r->headers_out.content_type.data = (u_char *) "text/plain";
+        }
     }
 
     /* allocate a new buffer for sending out the reply. */
